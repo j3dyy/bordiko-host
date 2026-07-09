@@ -33,6 +33,13 @@ timeout. A move the guest rejects returns `422` and changes nothing.
 | `POST /matches/{id}/moves` | `{playerId, type, payload}` | `{ok, events, moveCount, currentPlayer, ended, result}` or `422 {ok:false,error}` |
 | `GET /matches/{id}/view` | `?playerId=` | that player's **redacted** view |
 | `GET /matches/{id}/legal` | — | `{currentPlayer, moves[]}` |
+| `GET /leaderboard` | `?gameId=` | per-game ELO ladder `{entries:[{player,rating,wins,losses,draws,games}]}` |
+
+When a match ends, the game-host records the result and updates a per-game
+`ratings` ladder (head-to-head ELO, K=32, base 1200; win/loss counts for >2
+players). `player` is the user id passed at match creation, so the gateway
+resolves display names for the public leaderboard. Ratings persist in Postgres
+when `DATABASE_URL` is set, else in memory.
 
 ## Run locally
 

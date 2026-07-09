@@ -14,12 +14,13 @@ import (
 // allowed to advance a match — every move is validated by re-running the game's
 // deterministic guest.
 type Server struct {
-	games *GameRegistry
-	store Store
+	games   *GameRegistry
+	store   Store
+	ratings RatingsStore
 }
 
-func NewServer(games *GameRegistry, store Store) *Server {
-	return &Server{games: games, store: store}
+func NewServer(games *GameRegistry, store Store, ratings RatingsStore) *Server {
+	return &Server{games: games, store: store, ratings: ratings}
 }
 
 func (s *Server) Routes() http.Handler {
@@ -27,6 +28,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /health", s.health)
 	mux.HandleFunc("GET /readyz", s.health)
 	mux.HandleFunc("GET /games", s.listGames)
+	mux.HandleFunc("GET /leaderboard", s.getLeaderboard)
 	mux.HandleFunc("POST /matches", s.createMatch)
 	mux.HandleFunc("GET /matches/{id}", s.getMatch)
 	mux.HandleFunc("POST /matches/{id}/moves", s.applyMove)
@@ -41,6 +43,18 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) listGames(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"games": s.games.IDs()})
+}
+
+// getLeaderboard returns the per-game rating ladder (player = user id). The
+// gateway enriches these rows with display names.
+func (s *Server) getLeaderboard(w http.ResponseWriter, r *http.Request) {
+	gameID := r.URL.Query().Get("gameId")
+	entries, err := s.ratings.Leaderboard(r.Context(), gameID, 100)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "ratings_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"gameId": gameID, "entries": entries})
 }
 
 type createMatchRequest struct {
@@ -157,6 +171,16 @@ func (s *Server) applyMove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A match ends exactly once (further moves are rejected above), so this is
+	// the single point at which we record the result on the leaderboard.
+	if meta.Ended {
+		if result, ok := parseResult(meta.Result); ok {
+			if err := s.ratings.RecordResult(r.Context(), m.GameID, m.Players, result); err != nil {
+				log.Printf("record result for match %s: %v", m.ID, err)
+			}
+		}
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":            true,
 		"events":        res.Events,
@@ -271,7 +295,7 @@ func mustJSON(v any) []byte {
 	return b
 }
 
-func newID() string  { return randHex(12) }
+func newID() string      { return randHex(12) }
 func randomSeed() string { return randHex(8) }
 
 func randHex(n int) string {
