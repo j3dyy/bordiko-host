@@ -32,5 +32,11 @@ type Store interface {
 	CreateMatch(ctx context.Context, m *Match) error
 	GetMatch(ctx context.Context, id string) (*Match, error)
 	AppendMove(ctx context.Context, id string, move, newState, result json.RawMessage, moveCount int, ended bool) error
+	// CountsByGame returns how many matches exist per game id (the "plays"
+	// metric the marketplace catalog surfaces).
+	CountsByGame(ctx context.Context) (map[string]int, error)
+	// ActiveMatchForPlayer returns the id + game of an unfinished match the
+	// player is in, if any (used to enforce "one game at a time" + resume).
+	ActiveMatchForPlayer(ctx context.Context, playerID string) (id, gameID string, ok bool, err error)
 	Close() error
 }

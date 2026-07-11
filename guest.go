@@ -18,9 +18,13 @@ type ApplyResult struct {
 	Events json.RawMessage `json:"events"`
 }
 
-func (g *GameRuntime) Setup(ctx context.Context, players []string, seed string) (json.RawMessage, error) {
-	cmd, _ := json.Marshal(map[string]any{"op": "setup", "players": players, "seed": seed})
-	return g.Call(ctx, cmd)
+func (g *GameRuntime) Setup(ctx context.Context, players []string, seed string, config json.RawMessage) (json.RawMessage, error) {
+	cmd := map[string]any{"op": "setup", "players": players, "seed": seed}
+	if len(config) > 0 {
+		cmd["config"] = config
+	}
+	c, _ := json.Marshal(cmd)
+	return g.Call(ctx, c)
 }
 
 func (g *GameRuntime) Apply(ctx context.Context, state, move json.RawMessage) (*ApplyResult, error) {

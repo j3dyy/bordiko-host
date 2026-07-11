@@ -28,6 +28,7 @@ timeout. A move the guest rejects returns `422` and changes nothing.
 | Method & path | Body / query | Returns |
 | --- | --- | --- |
 | `GET /games` | — | `{games:[...]}` loaded game ids |
+| `GET /stats` | — | `{counts:{<gameId>:n}}` — matches per game (the "plays" metric the marketplace catalog surfaces) |
 | `POST /matches` | `{gameId, players[], seed?}` | match summary (`id`, `currentPlayer`, …) |
 | `GET /matches/{id}` | — | match summary |
 | `POST /matches/{id}/moves` | `{playerId, type, payload}` | `{ok, events, moveCount, currentPlayer, ended, result}` or `422 {ok:false,error}` |

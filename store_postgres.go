@@ -85,6 +85,41 @@ func (s *PostgresStore) GetMatch(ctx context.Context, id string) (*Match, error)
 	return &m, nil
 }
 
+func (s *PostgresStore) CountsByGame(ctx context.Context) (map[string]int, error) {
+	rows, err := s.pool.Query(ctx, `SELECT game_id, count(*) FROM matches GROUP BY game_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var (
+			g string
+			c int
+		)
+		if err := rows.Scan(&g, &c); err == nil {
+			out[g] = c
+		}
+	}
+	return out, nil
+}
+
+func (s *PostgresStore) ActiveMatchForPlayer(ctx context.Context, playerID string) (string, string, bool, error) {
+	needle, _ := json.Marshal([]string{playerID})
+	var id, gameID string
+	err := s.pool.QueryRow(ctx,
+		`SELECT id, game_id FROM matches
+		 WHERE ended = false AND players @> $1::jsonb
+		 ORDER BY created_at DESC LIMIT 1`, string(needle)).Scan(&id, &gameID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", "", false, nil
+	}
+	if err != nil {
+		return "", "", false, err
+	}
+	return id, gameID, true, nil
+}
+
 func (s *PostgresStore) AppendMove(ctx context.Context, id string, move, newState, result json.RawMessage, moveCount int, ended bool) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {

@@ -55,4 +55,30 @@ func (s *MemoryStore) AppendMove(_ context.Context, id string, move, newState, r
 	return nil
 }
 
+func (s *MemoryStore) CountsByGame(_ context.Context) (map[string]int, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := map[string]int{}
+	for _, m := range s.matches {
+		out[m.GameID]++
+	}
+	return out, nil
+}
+
+func (s *MemoryStore) ActiveMatchForPlayer(_ context.Context, playerID string) (string, string, bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, m := range s.matches {
+		if m.Ended {
+			continue
+		}
+		for _, p := range m.Players {
+			if p == playerID {
+				return m.ID, m.GameID, true, nil
+			}
+		}
+	}
+	return "", "", false, nil
+}
+
 func (s *MemoryStore) Close() error { return nil }

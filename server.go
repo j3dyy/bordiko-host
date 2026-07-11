@@ -28,6 +28,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /health", s.health)
 	mux.HandleFunc("GET /readyz", s.health)
 	mux.HandleFunc("GET /games", s.listGames)
+	mux.HandleFunc("GET /stats", s.getStats)
+	mux.HandleFunc("GET /players/{id}/active", s.getActiveMatch)
 	mux.HandleFunc("GET /leaderboard", s.getLeaderboard)
 	mux.HandleFunc("POST /matches", s.createMatch)
 	mux.HandleFunc("GET /matches/{id}", s.getMatch)
@@ -45,6 +47,27 @@ func (s *Server) listGames(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"games": s.games.IDs()})
 }
 
+// getStats returns per-game match counts — the "plays" metric surfaced by the
+// marketplace catalog (via the gateway).
+func (s *Server) getStats(w http.ResponseWriter, r *http.Request) {
+	counts, err := s.store.CountsByGame(r.Context())
+	if err != nil {
+		counts = map[string]int{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"counts": counts})
+}
+
+// getActiveMatch reports whether a player is currently in an unfinished match
+// (so the gateway can enforce one game at a time and offer "resume").
+func (s *Server) getActiveMatch(w http.ResponseWriter, r *http.Request) {
+	id, gameID, ok, err := s.store.ActiveMatchForPlayer(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"active": false})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"active": ok, "matchId": id, "gameId": gameID})
+}
+
 // getLeaderboard returns the per-game rating ladder (player = user id). The
 // gateway enriches these rows with display names.
 func (s *Server) getLeaderboard(w http.ResponseWriter, r *http.Request) {
@@ -58,9 +81,10 @@ func (s *Server) getLeaderboard(w http.ResponseWriter, r *http.Request) {
 }
 
 type createMatchRequest struct {
-	GameID  string   `json:"gameId"`
-	Players []string `json:"players"`
-	Seed    string   `json:"seed"`
+	GameID  string          `json:"gameId"`
+	Players []string        `json:"players"`
+	Seed    string          `json:"seed"`
+	Config  json.RawMessage `json:"config"`
 }
 
 func (s *Server) createMatch(w http.ResponseWriter, r *http.Request) {
@@ -83,7 +107,7 @@ func (s *Server) createMatch(w http.ResponseWriter, r *http.Request) {
 		seed = randomSeed()
 	}
 
-	state, err := rt.Setup(r.Context(), req.Players, seed)
+	state, err := rt.Setup(r.Context(), req.Players, seed, req.Config)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "setup_failed", err.Error())
 		return
