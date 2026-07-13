@@ -54,7 +54,7 @@ func main() {
 
 	srv := NewServer(games, store, ratings)
 	addr := env("GAME_HOST_ADDR", ":8081")
-	log.Printf("bordiko game-host listening on %s", addr)
+	log.Printf("bordiko game-host listening on %s (build %s)", addr, buildVersion)
 	if err := http.ListenAndServe(addr, srv.Routes()); err != nil {
 		log.Fatalf("game-host failed: %v", err)
 	}

@@ -50,12 +50,18 @@ func (s *Server) listGames(w http.ResponseWriter, _ *http.Request) {
 
 // getStats returns per-game match counts — the "plays" metric surfaced by the
 // marketplace catalog (via the gateway).
+// buildVersion is bumped on notable game-host changes so a deploy can be
+// verified live (GET /api/stats → "version"), removing the "did it actually
+// rebuild?" ambiguity. Also forces a real source change that busts Docker's
+// build cache.
+const buildVersion = "2026-07-13-forfeit-end"
+
 func (s *Server) getStats(w http.ResponseWriter, r *http.Request) {
 	counts, err := s.store.CountsByGame(r.Context())
 	if err != nil {
 		counts = map[string]int{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"counts": counts})
+	writeJSON(w, http.StatusOK, map[string]any{"counts": counts, "version": buildVersion})
 }
 
 // getActiveMatch reports whether a player is currently in an unfinished match
