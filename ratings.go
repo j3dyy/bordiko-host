@@ -32,10 +32,15 @@ type RatingEntry struct {
 	Games  int     `json:"games"`
 }
 
-// matchResult is the shape the engine emits for a finished match.
+// matchResult is the shape the engine emits for a finished match. A game may end
+// with a single `winner`, a partnership `winners` list (e.g. Jokeri teams), an
+// explicit `losers` list (e.g. a forfeit — the leaver's team loses, everyone
+// else wins), or a `draw`.
 type matchResult struct {
-	Winner string `json:"winner"`
-	Draw   bool   `json:"draw"`
+	Winner  string   `json:"winner"`
+	Winners []string `json:"winners"`
+	Losers  []string `json:"losers"`
+	Draw    bool     `json:"draw"`
 }
 
 func parseResult(raw json.RawMessage) (matchResult, bool) {
@@ -65,13 +70,34 @@ func elo(ra, rb, scoreA float64) (float64, float64) {
 	return ra + eloK*(scoreA-ea), rb + eloK*((1-scoreA)-eb)
 }
 
-// outcome classifies each player's result: +1 win, 0 draw, -1 loss.
+// outcome classifies each player's result: +1 win, 0 draw, -1 loss. Team results
+// (winners/losers lists) take precedence over the single-winner form.
 func outcomes(players []string, r matchResult) map[string]int {
 	out := make(map[string]int, len(players))
+	win := make(map[string]bool, len(r.Winners))
+	lose := make(map[string]bool, len(r.Losers))
+	for _, p := range r.Winners {
+		win[p] = true
+	}
+	for _, p := range r.Losers {
+		lose[p] = true
+	}
 	for _, p := range players {
 		switch {
 		case r.Draw:
 			out[p] = 0
+		case len(r.Winners) > 0:
+			if win[p] {
+				out[p] = 1
+			} else {
+				out[p] = -1
+			}
+		case len(r.Losers) > 0:
+			if lose[p] {
+				out[p] = -1
+			} else {
+				out[p] = 1
+			}
 		case r.Winner != "" && p == r.Winner:
 			out[p] = 1
 		case r.Winner != "":
@@ -295,8 +321,9 @@ func scoreFromOutcome(o int) float64 {
 	}
 }
 
-// parseValid reports whether a result actually decides the game (a winner or a
-// draw); an empty/garbage result is ignored so ratings aren't touched.
+// parseValid reports whether a result actually decides the game (a winner, a
+// team result, or a draw); an empty/garbage result is ignored so ratings aren't
+// touched.
 func parseValid(r matchResult) (matchResult, bool) {
-	return r, r.Draw || r.Winner != ""
+	return r, r.Draw || r.Winner != "" || len(r.Winners) > 0 || len(r.Losers) > 0
 }

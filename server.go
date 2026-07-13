@@ -34,6 +34,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /matches", s.createMatch)
 	mux.HandleFunc("GET /matches/{id}", s.getMatch)
 	mux.HandleFunc("POST /matches/{id}/moves", s.applyMove)
+	mux.HandleFunc("POST /matches/{id}/end", s.endMatch)
 	mux.HandleFunc("GET /matches/{id}/view", s.getView)
 	mux.HandleFunc("GET /matches/{id}/legal", s.getLegal)
 	return mux
@@ -213,6 +214,62 @@ func (s *Server) applyMove(w http.ResponseWriter, r *http.Request) {
 		"ended":         meta.Ended,
 		"result":        meta.Result,
 	})
+}
+
+type endMatchRequest struct {
+	Result json.RawMessage `json:"result"`
+	By     string          `json:"by"` // the player who forfeited / left (for the audit move)
+}
+
+// endMatch force-ends a match with a caller-supplied result — used by the
+// gateway when a player leaves (their team forfeits) so the others aren't stuck.
+// It patches `ended`+`result` INTO the state JSON (matchSummary/view read the
+// state, not the stored flag), records the audit move, and updates ratings. It
+// is idempotent: ending an already-ended match just returns its summary.
+func (s *Server) endMatch(w http.ResponseWriter, r *http.Request) {
+	m, meta, ok := s.loadMatch(w, r)
+	if !ok {
+		return
+	}
+	if meta.Ended {
+		writeJSON(w, http.StatusOK, matchSummary(m, meta))
+		return
+	}
+	var req endMatchRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.Result) == 0 {
+		writeError(w, http.StatusBadRequest, "bad_request", "result required")
+		return
+	}
+
+	// Mark the canonical state ended with the given result so view/summary report
+	// it consistently everywhere.
+	var state map[string]json.RawMessage
+	if err := json.Unmarshal(m.State, &state); err != nil {
+		writeError(w, http.StatusInternalServerError, "bad_state", err.Error())
+		return
+	}
+	state["ended"] = json.RawMessage("true")
+	state["result"] = req.Result
+	newState, err := json.Marshal(state)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "bad_state", err.Error())
+		return
+	}
+
+	forfeit, _ := json.Marshal(map[string]any{"type": "__end", "playerId": req.By})
+	if err := s.store.AppendMove(r.Context(), m.ID, forfeit, newState, req.Result, m.MoveCount+1, true); err != nil {
+		writeError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		return
+	}
+	if result, ok := parseResult(req.Result); ok {
+		if err := s.ratings.RecordResult(r.Context(), m.GameID, m.Players, result); err != nil {
+			log.Printf("record forfeit result for match %s: %v", m.ID, err)
+		}
+	}
+
+	newMeta, _ := parseMeta(newState)
+	m.State = newState
+	writeJSON(w, http.StatusOK, matchSummary(m, newMeta))
 }
 
 func (s *Server) getView(w http.ResponseWriter, r *http.Request) {
