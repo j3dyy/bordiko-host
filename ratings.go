@@ -70,6 +70,43 @@ func elo(ra, rb, scoreA float64) (float64, float64) {
 	return ra + eloK*(scoreA-ea), rb + eloK*((1-scoreA)-eb)
 }
 
+// eloDeltas generalises head-to-head ELO to teams and multiplayer: the winners
+// play the losers as two groups (by average rating), and each winner gains — and
+// each loser loses — the same per-capita amount. For exactly one winner and one
+// loser this reduces to classic 1v1 ELO. A result with no winner-vs-loser split
+// (e.g. a pure draw) moves no ratings. This is what lets a 4-player partnership
+// game like Jokeri actually move the ladder, instead of freezing everyone at the
+// base rating.
+func eloDeltas(current map[string]float64, players []string, oc map[string]int) map[string]float64 {
+	var winners, losers []string
+	var sumW, sumL float64
+	for _, p := range players {
+		switch oc[p] {
+		case 1:
+			winners = append(winners, p)
+			sumW += current[p]
+		case -1:
+			losers = append(losers, p)
+			sumL += current[p]
+		}
+	}
+	delta := make(map[string]float64, len(players))
+	if len(winners) == 0 || len(losers) == 0 {
+		return delta
+	}
+	avgW := sumW / float64(len(winners))
+	avgL := sumL / float64(len(losers))
+	expW := 1.0 / (1.0 + math.Pow(10, (avgL-avgW)/400.0))
+	gain := eloK * (1.0 - expW)
+	for _, p := range winners {
+		delta[p] = gain
+	}
+	for _, p := range losers {
+		delta[p] = -gain
+	}
+	return delta
+}
+
 // outcome classifies each player's result: +1 win, 0 draw, -1 loss. Team results
 // (winners/losers lists) take precedence over the single-winner form.
 func outcomes(players []string, r matchResult) map[string]int {
@@ -157,10 +194,14 @@ func (s *MemoryRatings) RecordResult(_ context.Context, gameID string, players [
 			r.draws++
 		}
 	}
-	if len(players) == 2 {
-		a, b := s.get(gameID, players[0]), s.get(gameID, players[1])
-		scoreA := scoreFromOutcome(oc[players[0]])
-		a.rating, b.rating = elo(a.rating, b.rating, scoreA)
+	// Move the rating for the whole field (winners vs losers) — not just
+	// head-to-head — so teams / multiplayer games advance the ladder too.
+	current := make(map[string]float64, len(players))
+	for _, p := range players {
+		current[p] = s.get(gameID, p).rating
+	}
+	for p, d := range eloDeltas(current, players, oc) {
+		s.get(gameID, p).rating += d
 	}
 	return nil
 }
@@ -254,20 +295,18 @@ func (s *PostgresRatings) RecordResult(ctx context.Context, gameID string, playe
 			return err
 		}
 	}
-	if len(players) == 2 {
-		ra, err := lockRating(ctx, tx, gameID, players[0])
+	// Move the rating for the whole field (winners vs losers) — teams / multiplayer
+	// included — so a 4-player game like Jokeri advances the ladder, not just 1v1.
+	current := make(map[string]float64, len(players))
+	for _, p := range players {
+		r, err := lockRating(ctx, tx, gameID, p)
 		if err != nil {
 			return err
 		}
-		rb, err := lockRating(ctx, tx, gameID, players[1])
-		if err != nil {
-			return err
-		}
-		na, nb := elo(ra, rb, scoreFromOutcome(oc[players[0]]))
-		if _, err := tx.Exec(ctx, `UPDATE ratings SET rating=$3 WHERE game_id=$1 AND player=$2`, gameID, players[0], na); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(ctx, `UPDATE ratings SET rating=$3 WHERE game_id=$1 AND player=$2`, gameID, players[1], nb); err != nil {
+		current[p] = r
+	}
+	for p, d := range eloDeltas(current, players, oc) {
+		if _, err := tx.Exec(ctx, `UPDATE ratings SET rating = rating + $3 WHERE game_id=$1 AND player=$2`, gameID, p, d); err != nil {
 			return err
 		}
 	}

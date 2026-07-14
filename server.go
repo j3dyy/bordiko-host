@@ -66,7 +66,7 @@ func (s *Server) listGames(w http.ResponseWriter, _ *http.Request) {
 // verified live (GET /api/stats → "version"), removing the "did it actually
 // rebuild?" ambiguity. Also forces a real source change that busts Docker's
 // build cache.
-const buildVersion = "2026-07-13-forfeit-end"
+const buildVersion = "2026-07-14-multiplayer-elo"
 
 func (s *Server) getStats(w http.ResponseWriter, r *http.Request) {
 	counts, err := s.store.CountsByGame(r.Context())

@@ -71,7 +71,9 @@ func TestRecordResultIgnoresEmptyResult(t *testing.T) {
 	}
 }
 
-func TestThreePlayerNoEloJustCounts(t *testing.T) {
+func TestMultiplayerEloMoves(t *testing.T) {
+	// A 3-player match now MOVES the ladder (winner up, the two losers down) —
+	// previously it froze everyone at the base rating.
 	r := NewMemoryRatings()
 	ctx := context.Background()
 	if err := r.RecordResult(ctx, "kot", []string{"a", "b", "c"}, matchResult{Winner: "a"}); err != nil {
@@ -81,12 +83,44 @@ func TestThreePlayerNoEloJustCounts(t *testing.T) {
 	if len(lb) != 3 {
 		t.Fatalf("want 3 rows, got %d", len(lb))
 	}
+	by := map[string]RatingEntry{}
 	for _, e := range lb {
-		if e.Rating != 1200 {
-			t.Fatalf("3-player match should not move ELO, %s at %.2f", e.Player, e.Rating)
-		}
+		by[e.Player] = e
 		if e.Games != 1 {
 			t.Fatalf("%s games=%d, want 1", e.Player, e.Games)
 		}
+	}
+	if by["a"].Rating <= 1200 {
+		t.Fatalf("winner should gain, got %.2f", by["a"].Rating)
+	}
+	if by["b"].Rating >= 1200 || by["c"].Rating >= 1200 {
+		t.Fatalf("losers should drop, got b=%.2f c=%.2f", by["b"].Rating, by["c"].Rating)
+	}
+}
+
+func TestTeamEloMovesAndZeroSum(t *testing.T) {
+	// Jokeri-style: a 4-player teams result (a,c beat b,d) lifts the winning pair
+	// and drops the losing pair, conserving total rating.
+	r := NewMemoryRatings()
+	ctx := context.Background()
+	if err := r.RecordResult(ctx, "jokeri", []string{"a", "b", "c", "d"},
+		matchResult{Winners: []string{"a", "c"}, Losers: []string{"b", "d"}}); err != nil {
+		t.Fatal(err)
+	}
+	lb, _ := r.Leaderboard(ctx, "jokeri", 10)
+	by := map[string]RatingEntry{}
+	total := 0.0
+	for _, e := range lb {
+		by[e.Player] = e
+		total += e.Rating
+	}
+	if by["a"].Rating <= 1200 || by["c"].Rating <= 1200 {
+		t.Fatalf("winning team should gain: a=%.2f c=%.2f", by["a"].Rating, by["c"].Rating)
+	}
+	if by["b"].Rating >= 1200 || by["d"].Rating >= 1200 {
+		t.Fatalf("losing team should drop: b=%.2f d=%.2f", by["b"].Rating, by["d"].Rating)
+	}
+	if math.Abs(total-4800) > 1e-6 {
+		t.Fatalf("team ELO should be zero-sum, total=%.4f want 4800", total)
 	}
 }
