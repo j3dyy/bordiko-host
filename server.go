@@ -7,7 +7,19 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"strings"
 )
+
+// hasBot reports whether any of the match's players is a bot (id prefixed
+// "bot:"). Bot-containing matches are excluded from ratings/leaderboards.
+func hasBot(players []string) bool {
+	for _, p := range players {
+		if strings.HasPrefix(p, "bot:") {
+			return true
+		}
+	}
+	return false
+}
 
 // Server is the authoritative game-host HTTP API. It owns the game registry (the
 // sandboxed WASM runtimes) and the match Store, and it is the only component
@@ -203,8 +215,9 @@ func (s *Server) applyMove(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// A match ends exactly once (further moves are rejected above), so this is
-	// the single point at which we record the result on the leaderboard.
-	if meta.Ended {
+	// the single point at which we record the result on the leaderboard. Matches
+	// that include a bot don't count toward ratings (they'd pollute the boards).
+	if meta.Ended && !hasBot(m.Players) {
 		if result, ok := parseResult(meta.Result); ok {
 			if err := s.ratings.RecordResult(r.Context(), m.GameID, m.Players, result); err != nil {
 				log.Printf("record result for match %s: %v", m.ID, err)
@@ -267,7 +280,7 @@ func (s *Server) endMatch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
-	if result, ok := parseResult(req.Result); ok {
+	if result, ok := parseResult(req.Result); ok && !hasBot(m.Players) {
 		if err := s.ratings.RecordResult(r.Context(), m.GameID, m.Players, result); err != nil {
 			log.Printf("record forfeit result for match %s: %v", m.ID, err)
 		}
