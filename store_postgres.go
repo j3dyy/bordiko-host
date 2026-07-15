@@ -35,6 +35,10 @@ CREATE TABLE IF NOT EXISTS moves (
     created_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (match_id, idx)
 );
+-- The published build a match is pinned to. Added after matches already existed,
+-- hence the additive ALTER: pre-existing rows keep '' and fall back to resolving
+-- whatever build is available, exactly as they did before pinning.
+ALTER TABLE matches ADD COLUMN IF NOT EXISTS game_version text NOT NULL DEFAULT '';
 `
 
 func NewPostgresStore(ctx context.Context, url string) (*PostgresStore, error) {
@@ -56,9 +60,9 @@ func NewPostgresStore(ctx context.Context, url string) (*PostgresStore, error) {
 func (s *PostgresStore) CreateMatch(ctx context.Context, m *Match) error {
 	players, _ := json.Marshal(m.Players)
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO matches (id, game_id, seed, players, state, move_count, ended, result)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-		m.ID, m.GameID, m.Seed, players, []byte(m.State), m.MoveCount, m.Ended, nullableJSON(m.Result))
+		`INSERT INTO matches (id, game_id, game_version, seed, players, state, move_count, ended, result)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+		m.ID, m.GameID, m.GameVersion, m.Seed, players, []byte(m.State), m.MoveCount, m.Ended, nullableJSON(m.Result))
 	return err
 }
 
@@ -70,9 +74,9 @@ func (s *PostgresStore) GetMatch(ctx context.Context, id string) (*Match, error)
 		result  []byte
 	)
 	err := s.pool.QueryRow(ctx,
-		`SELECT id, game_id, seed, players, state, move_count, ended, result, created_at
+		`SELECT id, game_id, game_version, seed, players, state, move_count, ended, result, created_at
 		 FROM matches WHERE id = $1`, id).
-		Scan(&m.ID, &m.GameID, &m.Seed, &players, &state, &m.MoveCount, &m.Ended, &result, &m.CreatedAt)
+		Scan(&m.ID, &m.GameID, &m.GameVersion, &m.Seed, &players, &state, &m.MoveCount, &m.Ended, &result, &m.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrMatchNotFound
 	}

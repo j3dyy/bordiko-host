@@ -13,15 +13,20 @@ var ErrMatchNotFound = errors.New("match not found")
 // State is the engine's canonical MatchState (which itself embeds the move log);
 // the Store additionally keeps an append-only moves log for auditing/replay.
 type Match struct {
-	ID        string          `json:"id"`
-	GameID    string          `json:"gameId"`
-	Seed      string          `json:"seed"`
-	Players   []string        `json:"players"`
-	State     json.RawMessage `json:"-"`
-	MoveCount int             `json:"moveCount"`
-	Ended     bool            `json:"ended"`
-	Result    json.RawMessage `json:"result,omitempty"`
-	CreatedAt time.Time       `json:"createdAt"`
+	ID     string `json:"id"`
+	GameID string `json:"gameId"`
+	// GameVersion pins the published build this match was created with. Every
+	// move is replayed against the same reducer, so publishing an update never
+	// changes a match already in flight. Empty for matches created before
+	// pinning existed (and for local GAMES_DIR builds).
+	GameVersion string          `json:"gameVersion,omitempty"`
+	Seed        string          `json:"seed"`
+	Players     []string        `json:"players"`
+	State       json.RawMessage `json:"-"`
+	MoveCount   int             `json:"moveCount"`
+	Ended       bool            `json:"ended"`
+	Result      json.RawMessage `json:"result,omitempty"`
+	CreatedAt   time.Time       `json:"createdAt"`
 }
 
 // Store persists matches and their move log. Two implementations exist: an

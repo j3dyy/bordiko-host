@@ -66,7 +66,7 @@ func (s *Server) listGames(w http.ResponseWriter, _ *http.Request) {
 // verified live (GET /api/stats → "version"), removing the "did it actually
 // rebuild?" ambiguity. Also forces a real source change that busts Docker's
 // build cache.
-const buildVersion = "2026-07-14-multiplayer-elo"
+const buildVersion = "2026-07-15-version-pinning"
 
 func (s *Server) getStats(w http.ResponseWriter, r *http.Request) {
 	counts, err := s.store.CountsByGame(r.Context())
@@ -112,7 +112,9 @@ func (s *Server) createMatch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON body")
 		return
 	}
-	rt, ok := s.games.GetOrFetch(r.Context(), req.GameID)
+	// A new match takes whatever is published NOW, and pins it — later moves
+	// resolve this exact version, so a publish mid-match can't swap the reducer.
+	rt, version, ok := s.games.ResolveLatest(r.Context(), req.GameID)
 	if !ok {
 		writeError(w, http.StatusNotFound, "unknown_game", "no such game: "+req.GameID)
 		return
@@ -138,14 +140,15 @@ func (s *Server) createMatch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	m := &Match{
-		ID:        newID(),
-		GameID:    req.GameID,
-		Seed:      seed,
-		Players:   req.Players,
-		State:     state,
-		MoveCount: meta.moveCount(),
-		Ended:     meta.Ended,
-		Result:    meta.Result,
+		ID:          newID(),
+		GameID:      req.GameID,
+		GameVersion: version,
+		Seed:        seed,
+		Players:     req.Players,
+		State:       state,
+		MoveCount:   meta.moveCount(),
+		Ended:       meta.Ended,
+		Result:      meta.Result,
 	}
 	if err := s.store.CreateMatch(r.Context(), m); err != nil {
 		writeError(w, http.StatusInternalServerError, "store_failed", err.Error())
@@ -182,7 +185,7 @@ func (s *Server) applyMove(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON body")
 		return
 	}
-	rt, ok := s.games.GetOrFetch(r.Context(), m.GameID)
+	rt, ok := s.games.Resolve(r.Context(), m.GameID, m.GameVersion)
 	if !ok {
 		writeError(w, http.StatusInternalServerError, "unknown_game", m.GameID)
 		return
@@ -301,7 +304,7 @@ func (s *Server) getView(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "missing_player", "playerId query param required")
 		return
 	}
-	rt, ok := s.games.GetOrFetch(r.Context(), m.GameID)
+	rt, ok := s.games.Resolve(r.Context(), m.GameID, m.GameVersion)
 	if !ok {
 		writeError(w, http.StatusInternalServerError, "unknown_game", m.GameID)
 		return
@@ -319,7 +322,7 @@ func (s *Server) getLegal(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	rt, ok := s.games.GetOrFetch(r.Context(), m.GameID)
+	rt, ok := s.games.Resolve(r.Context(), m.GameID, m.GameVersion)
 	if !ok {
 		writeError(w, http.StatusInternalServerError, "unknown_game", m.GameID)
 		return
@@ -360,6 +363,7 @@ func matchSummary(m *Match, meta stateMeta) map[string]any {
 	return map[string]any{
 		"id":            m.ID,
 		"gameId":        m.GameID,
+		"gameVersion":   m.GameVersion,
 		"players":       m.Players,
 		"currentPlayer": meta.Flow.CurrentPlayer,
 		"turn":          meta.Flow.Turn,
