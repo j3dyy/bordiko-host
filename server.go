@@ -327,7 +327,10 @@ func (s *Server) getLegal(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "unknown_game", m.GameID)
 		return
 	}
-	moves, err := rt.Legal(r.Context(), m.State)
+	// Optional ?playerId= asks for that seat's moves (simultaneous stages);
+	// otherwise the current player's.
+	playerID := r.URL.Query().Get("playerId")
+	moves, err := rt.Legal(r.Context(), m.State, playerID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "guest_error", err.Error())
 		return
@@ -366,6 +369,7 @@ func matchSummary(m *Match, meta stateMeta) map[string]any {
 		"gameVersion":   m.GameVersion,
 		"players":       m.Players,
 		"currentPlayer": meta.Flow.CurrentPlayer,
+		"active":        meta.Flow.Active, // simultaneous mode: seats allowed to act at once
 		"turn":          meta.Flow.Turn,
 		"moveCount":     meta.moveCount(),
 		"ended":         meta.Ended,

@@ -45,8 +45,12 @@ func (g *GameRuntime) View(ctx context.Context, state json.RawMessage, playerID 
 	return g.Call(ctx, cmd)
 }
 
-func (g *GameRuntime) Legal(ctx context.Context, state json.RawMessage) (json.RawMessage, error) {
-	cmd, _ := json.Marshal(map[string]any{"op": "legal", "state": state})
+// Legal enumerates moves. A non-empty playerID asks for THAT seat's moves
+// (simultaneous stages, where several seats can act at once); empty means the
+// current player. Older wasm ignores playerId and always answers for the current
+// player, which is correct for single-seat games.
+func (g *GameRuntime) Legal(ctx context.Context, state json.RawMessage, playerID string) (json.RawMessage, error) {
+	cmd, _ := json.Marshal(map[string]any{"op": "legal", "state": state, "playerId": playerID})
 	return g.Call(ctx, cmd)
 }
 
@@ -54,9 +58,10 @@ func (g *GameRuntime) Legal(ctx context.Context, state json.RawMessage) (json.Ra
 // to drive the API (turn, end status, move count) without parsing game state.
 type stateMeta struct {
 	Flow struct {
-		CurrentPlayer string  `json:"currentPlayer"`
-		Turn          int     `json:"turn"`
-		Phase         *string `json:"phase"`
+		CurrentPlayer string   `json:"currentPlayer"`
+		Active        []string `json:"active"` // simultaneous mode: seats allowed to act at once (nil/empty = ordinary turn)
+		Turn          int      `json:"turn"`
+		Phase         *string  `json:"phase"`
 	} `json:"flow"`
 	Ended  bool              `json:"ended"`
 	Result json.RawMessage   `json:"result"`
