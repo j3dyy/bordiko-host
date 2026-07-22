@@ -40,6 +40,23 @@ func (g *GameRuntime) Apply(ctx context.Context, state, move json.RawMessage) (*
 	return &res, nil
 }
 
+// Tick advances a real-time game's world by one fixed timestep (dt in ms). It is
+// the system-driven counterpart to Apply — no player, no legality check; the
+// guest runs the game's `tick` reducer. Only games whose manifest declares
+// `realtime.tick` are ever ticked.
+func (g *GameRuntime) Tick(ctx context.Context, state json.RawMessage, dtMs int) (*ApplyResult, error) {
+	cmd, _ := json.Marshal(map[string]any{"op": "tick", "state": state, "dt": dtMs})
+	out, err := g.Call(ctx, cmd)
+	if err != nil {
+		return nil, err
+	}
+	var res ApplyResult
+	if err := json.Unmarshal(out, &res); err != nil {
+		return nil, fmt.Errorf("decode tick result: %w (raw: %s)", err, truncate(out))
+	}
+	return &res, nil
+}
+
 func (g *GameRuntime) View(ctx context.Context, state json.RawMessage, playerID string) (json.RawMessage, error) {
 	cmd, _ := json.Marshal(map[string]any{"op": "view", "state": state, "playerId": playerID})
 	return g.Call(ctx, cmd)

@@ -46,6 +46,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /matches", s.createMatch)
 	mux.HandleFunc("GET /matches/{id}", s.getMatch)
 	mux.HandleFunc("POST /matches/{id}/moves", s.applyMove)
+	mux.HandleFunc("POST /matches/{id}/tick", s.tickMatch)
 	mux.HandleFunc("POST /matches/{id}/end", s.endMatch)
 	mux.HandleFunc("GET /matches/{id}/view", s.getView)
 	mux.HandleFunc("GET /matches/{id}/legal", s.getLegal)
@@ -235,6 +236,80 @@ func (s *Server) applyMove(w http.ResponseWriter, r *http.Request) {
 		"currentPlayer": meta.Flow.CurrentPlayer,
 		"ended":         meta.Ended,
 		"result":        meta.Result,
+	})
+}
+
+type tickRequest struct {
+	DtMs int `json:"dt"` // fixed timestep in ms (host clock = 1000/tickRate)
+}
+
+// tickMatch advances a real-time match's world by one fixed timestep. It is the
+// system-driven twin of applyMove: no player, no legality check — the gateway
+// clock calls it at the game's tickRate. Only games whose reducer has a `tick`
+// handler accept it (others return 422 "not real-time"), so a stray tick against
+// a turn-based match is a harmless no-op error, never a mutation.
+func (s *Server) tickMatch(w http.ResponseWriter, r *http.Request) {
+	m, _, ok := s.loadMatch(w, r)
+	if !ok {
+		return
+	}
+	if m.Ended {
+		writeError(w, http.StatusConflict, "match_ended", "the match has already ended")
+		return
+	}
+	var req tickRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON body")
+		return
+	}
+	if req.DtMs <= 0 {
+		writeError(w, http.StatusBadRequest, "bad_dt", "dt must be a positive number of milliseconds")
+		return
+	}
+	rt, ok := s.games.Resolve(r.Context(), m.GameID, m.GameVersion)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "unknown_game", m.GameID)
+		return
+	}
+
+	res, err := rt.Tick(r.Context(), m.State, req.DtMs)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "guest_error", err.Error())
+		return
+	}
+	if !res.OK {
+		// e.g. a turn-based game with no tick handler — client/config error, not a fault.
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"ok": false, "error": res.Error})
+		return
+	}
+
+	meta, err := parseMeta(res.State)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "bad_state", err.Error())
+		return
+	}
+	tick, _ := json.Marshal(map[string]any{"type": "__tick", "dt": req.DtMs})
+	if err := s.store.AppendMove(r.Context(), m.ID, tick, res.State, meta.Result, meta.moveCount(), meta.Ended); err != nil {
+		writeError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		return
+	}
+
+	// A tick can end the match (e.g. someone was pushed out). Record the result on
+	// the leaderboard exactly once, same as applyMove.
+	if meta.Ended && !hasBot(m.Players) {
+		if result, ok := parseResult(meta.Result); ok {
+			if err := s.ratings.RecordResult(r.Context(), m.GameID, m.Players, result); err != nil {
+				log.Printf("record tick result for match %s: %v", m.ID, err)
+			}
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":        true,
+		"events":    res.Events,
+		"moveCount": meta.moveCount(),
+		"ended":     meta.Ended,
+		"result":    meta.Result,
 	})
 }
 
