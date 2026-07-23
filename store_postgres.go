@@ -108,6 +108,12 @@ func (s *PostgresStore) CountsByGame(ctx context.Context) (map[string]int, error
 	return out, nil
 }
 
+func (s *PostgresStore) DeleteMatch(ctx context.Context, id string) error {
+	// moves rows cascade (moves.match_id REFERENCES matches(id) ON DELETE CASCADE).
+	_, err := s.pool.Exec(ctx, `DELETE FROM matches WHERE id = $1`, id)
+	return err
+}
+
 func (s *PostgresStore) ActiveMatchForPlayer(ctx context.Context, playerID string) (string, string, bool, error) {
 	needle, _ := json.Marshal([]string{playerID})
 	var id, gameID string

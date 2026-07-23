@@ -43,5 +43,9 @@ type Store interface {
 	// ActiveMatchForPlayer returns the id + game of an unfinished match the
 	// player is in, if any (used to enforce "one game at a time" + resume).
 	ActiveMatchForPlayer(ctx context.Context, playerID string) (id, gameID string, ok bool, err error)
+	// DeleteMatch removes a match and its moves. Used when a real-time match
+	// migrates to the in-memory hot store — its durable copy is deleted so it
+	// doesn't linger as an "active" orphan that traps the player.
+	DeleteMatch(ctx context.Context, id string) error
 	Close() error
 }

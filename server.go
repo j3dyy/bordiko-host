@@ -82,6 +82,9 @@ func (s *Server) ensureRealtime(ctx context.Context, id string) {
 	}
 	_ = s.mem.CreateMatch(ctx, m)
 	s.rt.Store(id, true)
+	// Drop the durable copy so it doesn't linger as an "active" orphan for the
+	// one-game-at-a-time guard (which scans the durable store). Best effort.
+	_ = s.store.DeleteMatch(ctx, id)
 }
 
 // appendMove persists a write to the match's store. For real-time matches the
@@ -153,7 +156,14 @@ func (s *Server) getStats(w http.ResponseWriter, r *http.Request) {
 // getActiveMatch reports whether a player is currently in an unfinished match
 // (so the gateway can enforce one game at a time and offer "resume").
 func (s *Server) getActiveMatch(w http.ResponseWriter, r *http.Request) {
-	id, gameID, ok, err := s.store.ActiveMatchForPlayer(r.Context(), r.PathValue("id"))
+	pid := r.PathValue("id")
+	// Real-time matches live in the in-memory hot store — check it first (and it
+	// excludes ended matches, so a left/finished match no longer traps the player).
+	if id, gameID, ok, err := s.mem.ActiveMatchForPlayer(r.Context(), pid); err == nil && ok {
+		writeJSON(w, http.StatusOK, map[string]any{"active": true, "matchId": id, "gameId": gameID})
+		return
+	}
+	id, gameID, ok, err := s.store.ActiveMatchForPlayer(r.Context(), pid)
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{"active": false})
 		return

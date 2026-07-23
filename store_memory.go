@@ -65,6 +65,14 @@ func (s *MemoryStore) CountsByGame(_ context.Context) (map[string]int, error) {
 	return out, nil
 }
 
+func (s *MemoryStore) DeleteMatch(_ context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.matches, id)
+	delete(s.moves, id)
+	return nil
+}
+
 func (s *MemoryStore) ActiveMatchForPlayer(_ context.Context, playerID string) (string, string, bool, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
