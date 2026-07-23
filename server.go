@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -30,17 +31,24 @@ type Server struct {
 	games   *GameRegistry
 	store   Store
 	ratings RatingsStore
+	// mem is a fast in-memory store for REAL-TIME matches. A real-time game writes
+	// ~20 ticks/sec + every player's input; persisting each to Postgres (a network
+	// round-trip, serialized) can't sustain the tick rate, so the match freezes.
+	// Real-time matches are ephemeral action games — they don't need per-tick
+	// durability — so on a match's first tick we migrate it here and all its
+	// ticks/inputs/reads stay in memory (µs, no PK, no growing durable log).
+	mem Store
+	rt  sync.Map // matchID → true once migrated to the in-memory hot store
 	// Per-match write lock. A real-time match takes many concurrent writes at once
-	// (the 20 Hz tick clock + every player's input moves), and each write is a
-	// load→apply→append read-modify-write on the move log. Without serialising per
-	// match, two concurrent writes read the same move count and insert the same
-	// primary key → "duplicate key ... moves_pkey". This makes each match's writes
-	// atomic; different matches never contend.
+	// (the tick clock + every player's input moves), and each write is a
+	// load→apply→append read-modify-write. Without serialising per match, two
+	// concurrent writes read the same move count and collide. This makes each
+	// match's writes atomic; different matches never contend.
 	locks sync.Map // matchID → *sync.Mutex
 }
 
 func NewServer(games *GameRegistry, store Store, ratings RatingsStore) *Server {
-	return &Server{games: games, store: store, ratings: ratings}
+	return &Server{games: games, store: store, ratings: ratings, mem: NewMemoryStore()}
 }
 
 // lockMatch returns (already locked) the mutex guarding one match's writes.
@@ -50,6 +58,54 @@ func (s *Server) lockMatch(id string) *sync.Mutex {
 	m := mu.(*sync.Mutex)
 	m.Lock()
 	return m
+}
+
+// storeFor returns the store a match lives in: the in-memory hot store for
+// real-time matches, else the durable store.
+func (s *Server) storeFor(id string) Store {
+	if _, ok := s.rt.Load(id); ok {
+		return s.mem
+	}
+	return s.store
+}
+
+// ensureRealtime migrates a match into the in-memory hot store on its FIRST tick
+// (the moment we know it's real-time). Called under the per-match lock, so it
+// runs exactly once. The durable copy is left orphaned — harmless.
+func (s *Server) ensureRealtime(ctx context.Context, id string) {
+	if _, ok := s.rt.Load(id); ok {
+		return
+	}
+	m, err := s.store.GetMatch(ctx, id)
+	if err != nil {
+		return // gone, or already ours
+	}
+	_ = s.mem.CreateMatch(ctx, m)
+	s.rt.Store(id, true)
+}
+
+// appendMove persists a write to the match's store. For real-time matches the
+// move log is stripped first so the state snapshot stays small (the guest is fed
+// the whole state each tick — an unbounded log would slow it down over time).
+func (s *Server) appendMove(ctx context.Context, id string, move, state, result json.RawMessage, moveCount int, ended bool) error {
+	if _, ok := s.rt.Load(id); ok {
+		state = stripLog(state)
+	}
+	return s.storeFor(id).AppendMove(ctx, id, move, state, result, moveCount, ended)
+}
+
+// stripLog replaces the state's move log with an empty array (real-time only).
+func stripLog(state json.RawMessage) json.RawMessage {
+	var m map[string]json.RawMessage
+	if json.Unmarshal(state, &m) != nil {
+		return state
+	}
+	m["log"] = json.RawMessage("[]")
+	out, err := json.Marshal(m)
+	if err != nil {
+		return state
+	}
+	return out
 }
 
 func (s *Server) Routes() http.Handler {
@@ -231,7 +287,7 @@ func (s *Server) applyMove(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "bad_state", err.Error())
 		return
 	}
-	if err := s.store.AppendMove(r.Context(), m.ID, move, res.State, meta.Result, meta.moveCount(), meta.Ended); err != nil {
+	if err := s.appendMove(r.Context(), m.ID, move, res.State, meta.Result, meta.moveCount(), meta.Ended); err != nil {
 		writeError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
@@ -268,6 +324,9 @@ type tickRequest struct {
 // a turn-based match is a harmless no-op error, never a mutation.
 func (s *Server) tickMatch(w http.ResponseWriter, r *http.Request) {
 	defer s.lockMatch(r.PathValue("id")).Unlock()
+	// A tick is proof the match is real-time — move it to the in-memory hot store
+	// so it isn't bottlenecked by a per-tick durable write.
+	s.ensureRealtime(r.Context(), r.PathValue("id"))
 	m, _, ok := s.loadMatch(w, r)
 	if !ok {
 		return
@@ -308,7 +367,7 @@ func (s *Server) tickMatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tick, _ := json.Marshal(map[string]any{"type": "__tick", "dt": req.DtMs})
-	if err := s.store.AppendMove(r.Context(), m.ID, tick, res.State, meta.Result, meta.moveCount(), meta.Ended); err != nil {
+	if err := s.appendMove(r.Context(), m.ID, tick, res.State, meta.Result, meta.moveCount(), meta.Ended); err != nil {
 		writeError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
@@ -374,7 +433,7 @@ func (s *Server) endMatch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	forfeit, _ := json.Marshal(map[string]any{"type": "__end", "playerId": req.By})
-	if err := s.store.AppendMove(r.Context(), m.ID, forfeit, newState, req.Result, m.MoveCount+1, true); err != nil {
+	if err := s.appendMove(r.Context(), m.ID, forfeit, newState, req.Result, m.MoveCount+1, true); err != nil {
 		writeError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
@@ -440,7 +499,7 @@ func (s *Server) getLegal(w http.ResponseWriter, r *http.Request) {
 // appropriate error response and returning ok=false on failure.
 func (s *Server) loadMatch(w http.ResponseWriter, r *http.Request) (*Match, stateMeta, bool) {
 	id := r.PathValue("id")
-	m, err := s.store.GetMatch(r.Context(), id)
+	m, err := s.storeFor(id).GetMatch(r.Context(), id)
 	if errors.Is(err, ErrMatchNotFound) {
 		writeError(w, http.StatusNotFound, "not_found", "no such match")
 		return nil, stateMeta{}, false
