@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 )
 
 // hasBot reports whether any of the match's players is a bot (id prefixed
@@ -29,10 +30,26 @@ type Server struct {
 	games   *GameRegistry
 	store   Store
 	ratings RatingsStore
+	// Per-match write lock. A real-time match takes many concurrent writes at once
+	// (the 20 Hz tick clock + every player's input moves), and each write is a
+	// load→apply→append read-modify-write on the move log. Without serialising per
+	// match, two concurrent writes read the same move count and insert the same
+	// primary key → "duplicate key ... moves_pkey". This makes each match's writes
+	// atomic; different matches never contend.
+	locks sync.Map // matchID → *sync.Mutex
 }
 
 func NewServer(games *GameRegistry, store Store, ratings RatingsStore) *Server {
 	return &Server{games: games, store: store, ratings: ratings}
+}
+
+// lockMatch returns (already locked) the mutex guarding one match's writes.
+// The caller must Unlock it (defer).
+func (s *Server) lockMatch(id string) *sync.Mutex {
+	mu, _ := s.locks.LoadOrStore(id, &sync.Mutex{})
+	m := mu.(*sync.Mutex)
+	m.Lock()
+	return m
 }
 
 func (s *Server) Routes() http.Handler {
@@ -173,6 +190,7 @@ type applyMoveRequest struct {
 }
 
 func (s *Server) applyMove(w http.ResponseWriter, r *http.Request) {
+	defer s.lockMatch(r.PathValue("id")).Unlock()
 	m, _, ok := s.loadMatch(w, r)
 	if !ok {
 		return
@@ -249,6 +267,7 @@ type tickRequest struct {
 // handler accept it (others return 422 "not real-time"), so a stray tick against
 // a turn-based match is a harmless no-op error, never a mutation.
 func (s *Server) tickMatch(w http.ResponseWriter, r *http.Request) {
+	defer s.lockMatch(r.PathValue("id")).Unlock()
 	m, _, ok := s.loadMatch(w, r)
 	if !ok {
 		return
@@ -324,6 +343,7 @@ type endMatchRequest struct {
 // state, not the stored flag), records the audit move, and updates ratings. It
 // is idempotent: ending an already-ended match just returns its summary.
 func (s *Server) endMatch(w http.ResponseWriter, r *http.Request) {
+	defer s.lockMatch(r.PathValue("id")).Unlock()
 	m, meta, ok := s.loadMatch(w, r)
 	if !ok {
 		return
